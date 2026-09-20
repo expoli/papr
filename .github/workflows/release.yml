@@ -132,6 +132,16 @@ jobs:
           ./"$appimage" --appimage-extract >/dev/null
           find squashfs-root -name 'libwayland-*.so*' -delete
 
+          # The hook forces x11 and clobbers a GDK_BACKEND the user exported.
+          # Let an explicit one through, now that native Wayland works here;
+          # warn instead of failing if upstream ever moves that line.
+          hook="squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh"
+          if grep -q '^export GDK_BACKEND=x11' "$hook"; then
+            sed -i 's|^export GDK_BACKEND=x11|export GDK_BACKEND="${GDK_BACKEND:-x11}"|' "$hook"
+          else
+            echo "::warning::GDK_BACKEND no longer hardcoded in $hook; skipping that tweak"
+          fi
+
           curl -fsSL -o appimagetool \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
           chmod +x appimagetool
