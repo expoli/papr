@@ -1664,14 +1664,20 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
  *  services. The reader can override this per translation, but only temporarily. */
 type TranslateEngine = "llm" | "google" | "deepl" | "bing";
 
+type AiProvider = "anthropic" | "openai" | "deepseek";
+
+/** Mirror of `AiConfig::new`'s mapping: anything that is not openai or deepseek
+ *  is treated as anthropic, so the per-provider keys line up with what the
+ *  backend would actually use. */
+const resolveProvider = (raw: string | null): AiProvider =>
+  raw === "openai" || raw === "deepseek" ? raw : "anthropic";
+
 /** Real AI provider configuration — backing the AI summary feature, plus the
  *  default translation engine + language and the engines' credentials. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
-  const [provider, setProvider] = useState<"anthropic" | "openai" | "deepseek">(
-    "anthropic",
-  );
+  const [provider, setProvider] = useState<AiProvider>("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -1682,6 +1688,37 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const savedKey = useRef("");
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
+
+  // Per-provider memory. `ai_model` / `ai_base_url` always describe the active
+  // provider (they are what the backend reads); the `<key>_<provider>` copies
+  // keep each provider's own configuration, so switching providers stops
+  // discarding what was set up for the one being left.
+  const rememberProviderValue = (
+    p: AiProvider,
+    key: "ai_model" | "ai_base_url",
+    value: string,
+  ) => {
+    api.setSetting(`${key}_${p}`, value).catch(() => {});
+  };
+
+  /** Point the form and the stored settings at `p`'s own model / Base URL. */
+  const loadProviderProfile = async (p: AiProvider) => {
+    const [m, b] = await Promise.all([
+      api.getSetting(`ai_model_${p}`),
+      api.getSetting(`ai_base_url_${p}`),
+    ]);
+    const nextModel = m ?? "";
+    const nextBaseUrl = b ?? "";
+    setModel(nextModel);
+    savedModel.current = nextModel;
+    setBaseUrl(nextBaseUrl);
+    savedBaseUrl.current = nextBaseUrl;
+    await Promise.all([
+      api.setSetting("ai_model", nextModel),
+      api.setSetting("ai_base_url", nextBaseUrl),
+      api.setSetting("ai_provider", p),
+    ]);
+  };
 
   useEffect(() => {
     Promise.all([
@@ -1707,6 +1744,10 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setBaseUrl(b);
           savedBaseUrl.current = b;
         }
+        // Seed this provider's own copy on first open, so a configuration that
+        // predates the per-provider keys survives the first switch away.
+        if (m) rememberProviderValue(resolveProvider(p), "ai_model", m);
+        if (b) rememberProviderValue(resolveProvider(p), "ai_base_url", b);
         if (eng === "google" || eng === "deepl" || eng === "bing" || eng === "llm")
           setEngine(eng);
         if (tl) setTranslateLang(tl);
@@ -1751,18 +1792,11 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           ]}
           onChange={(v) => {
             setProvider(v);
-            // The model name and base URL are provider-specific — carrying
-            // them over would send e.g. an OpenAI model to Anthropic. Clear
-            // both so the backend falls back to the new provider's defaults.
-            setModel("");
-            savedModel.current = "";
-            setBaseUrl("");
-            savedBaseUrl.current = "";
-            Promise.all([
-              api.setSetting("ai_provider", v),
-              api.setSetting("ai_model", ""),
-              api.setSetting("ai_base_url", ""),
-            ])
+            // Model name and Base URL are provider-specific, so the form has
+            // to follow the new provider. The provider being left keeps its
+            // values under its own keys, so switching back restores them
+            // instead of leaving the fields empty.
+            loadProviderProfile(v)
               .then(() =>
                 onToast(
                   t("settings.advanced.aiSaved", {
@@ -1817,6 +1851,8 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
               savedModel.current = trimmed;
               save("ai_model", trimmed, t("settings.advanced.aiModelLabel"));
             }
+            // Keep this provider's own copy in step with the active setting.
+            rememberProviderValue(provider, "ai_model", trimmed);
           }}
         />
       </Row>
@@ -1838,6 +1874,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
               savedBaseUrl.current = trimmed;
               save("ai_base_url", trimmed, t("settings.advanced.aiBaseUrlLabel"));
             }
+            rememberProviderValue(provider, "ai_base_url", trimmed);
           }}
         />
       </Row>
