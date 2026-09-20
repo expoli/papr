@@ -217,6 +217,67 @@ pub async fn complete_chat(
     Ok(outcome.text)
 }
 
+/// How long a connection test waits before giving up: long enough for a cold
+/// provider, short enough that the settings button does not look hung.
+const TEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Output cap for the connection test. Only the fact that something came back
+/// matters, so this just has to cover a model that ignores the "reply OK"
+/// instruction and starts explaining itself.
+const TEST_MAX_TOKENS: u32 = 64;
+
+/// The system prompt for the connection test — instruction-shaped so it works
+/// with a summarizer-style model and returns in a couple of tokens.
+const TEST_SYSTEM: &str = "You are a connectivity check for an RSS reader. Reply with exactly: OK";
+
+/// The user turn of the connection test.
+const TEST_PROMPT: &str = "ping";
+
+/// What a successful connection test saw, shaped for the settings UI.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestOutcome {
+    /// The model that answered, after defaults/trimming — echoing it confirms
+    /// which model the provider actually served.
+    pub model: String,
+    /// The endpoint that answered. Surfacing it makes a wrong Base URL obvious
+    /// instead of leaving the user to guess which one was used.
+    pub base_url: String,
+    /// Wall-clock time for the whole round trip.
+    pub latency_ms: u64,
+    /// The reply, trimmed and truncated for inline display.
+    pub reply: String,
+}
+
+/// Verify that the configured provider really answers: one minimal completion
+/// through the same path [`stream_chat`] uses — auth header, endpoint, model
+/// name, and SSE parsing — so a green result means summaries and translation
+/// will work too, and a red one carries the provider's own words (rejected key,
+/// unknown model, unreachable gateway).
+///
+/// Costs a handful of tokens.
+pub async fn test_connection(client: &Client, cfg: &AiConfig) -> AppResult<TestOutcome> {
+    let started = std::time::Instant::now();
+    let reply = match tokio::time::timeout(
+        TEST_TIMEOUT,
+        complete_chat(client, cfg, TEST_SYSTEM, TEST_PROMPT, TEST_MAX_TOKENS),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        // Without this a silently dropped endpoint (bad Base URL, blackholed
+        // gateway, captive portal) would keep the button spinning for the full
+        // AI request timeout.
+        Err(_) => return Err(AppError::code("aiTestTimeout")),
+    };
+    Ok(TestOutcome {
+        model: cfg.model.clone(),
+        base_url: cfg.base_url.clone(),
+        latency_ms: started.elapsed().as_millis() as u64,
+        reply: reply.trim().chars().take(160).collect(),
+    })
+}
+
 async fn stream_anthropic(
     client: &Client,
     cfg: &AiConfig,
@@ -623,5 +684,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.model, "gpt-4.1-mini");
+    }
+
+    /// Live check against a real provider — the only way to cover the request
+    /// path end to end (auth header, endpoint, model, SSE parsing). Ignored by
+    /// default because CI has no credentials; run it against a configured
+    /// provider with:
+    ///
+    /// ```text
+    /// PAPR_TEST_AI_KEY=sk-… PAPR_TEST_AI_MODEL=deepseek-flash \
+    ///   PAPR_TEST_AI_BASE_URL=https://example.invalid/v1 \
+    ///   PAPR_TEST_AI_PROVIDER=deepseek \
+    ///   cargo test -p papr-core --lib -- --ignored test_connection_live
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real provider: set PAPR_TEST_AI_KEY (MODEL / BASE_URL / PROVIDER optional)"]
+    async fn test_connection_live_reports_what_it_saw() {
+        let key = std::env::var("PAPR_TEST_AI_KEY").expect("PAPR_TEST_AI_KEY");
+        let cfg = super::AiConfig::new(
+            std::env::var("PAPR_TEST_AI_PROVIDER").ok(),
+            Some(key),
+            std::env::var("PAPR_TEST_AI_MODEL").ok(),
+            std::env::var("PAPR_TEST_AI_BASE_URL").ok(),
+        )
+        .expect("config from env");
+        let client = reqwest::Client::builder().build().expect("http client");
+        let outcome = super::test_connection(&client, &cfg)
+            .await
+            .expect("provider answers");
+        assert!(
+            !outcome.reply.is_empty(),
+            "a provider that answers with nothing is not usable for summaries"
+        );
+        println!(
+            "model={} base_url={} latency={}ms reply={:?}",
+            outcome.model, outcome.base_url, outcome.latency_ms, outcome.reply
+        );
     }
 }
