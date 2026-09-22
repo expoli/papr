@@ -1702,7 +1702,11 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
     switching.current = true;
     setProfileBusy(true);
     try {
-      const [m, b] = await enqueueProfile(() => api.configureAiProvider(p));
+      const [m, b] = await enqueueProfile(async () => {
+        // Save the visible draft before switching, including a failed blur save.
+        await api.configureAiProvider(provider, model.trim(), baseUrl.trim());
+        return api.configureAiProvider(p);
+      });
       setProvider(p);
       setModel(m); savedModel.current = m;
       setBaseUrl(b); savedBaseUrl.current = b;
