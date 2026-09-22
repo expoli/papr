@@ -61,6 +61,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
@@ -251,11 +252,14 @@ pub fn run() {
             commands::smart_counts,
             commands::extract_fulltext,
             commands::fetch_image,
+            commands::save_image,
             commands::import_opml,
             commands::export_opml,
+            commands::save_text_file,
             commands::get_setting,
             commands::set_setting,
             commands::configure_ai_provider,
+            commands::ai_test,
             commands::ai_summarize,
             commands::ai_ask,
             commands::ai_digest,
