@@ -209,7 +209,7 @@ export interface AiTestOutcome {
 /**
  * Send one minimal request to the configured provider and report what came
  * back. Takes the values currently in the settings form so the test works
- * before saving; blanks fall back to the stored settings.
+ * before saving; empty model/URL fields use provider defaults.
  */
 export const testAi = (args: {
   provider: string;

@@ -1690,7 +1690,10 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
     text: string;
   } | null>(null);
 
+  const testRevision = useRef(0);
+
   const runTest = () => {
+    const revision = ++testRevision.current;
     setTesting(true);
     setTestResult(null);
     api
@@ -1700,25 +1703,33 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
         model: model.trim(),
         baseUrl: baseUrl.trim(),
       })
-      .then((r) =>
+      .then((r) => {
+        if (revision !== testRevision.current) return;
         setTestResult({
           ok: true,
           text: t("settings.advanced.aiTestOk", {
             model: r.model,
             ms: r.latencyMs,
           }),
-        }),
-      )
+        });
+      })
       // The provider's own words are the useful part (rejected key, unknown
       // model, unreachable Base URL), so show them instead of a generic
       // "request failed".
-      .catch((e) => setTestResult({ ok: false, text: errorText(e) }))
+      .catch((e) => {
+        if (revision === testRevision.current)
+          setTestResult({ ok: false, text: errorText(e) });
+      })
       .finally(() => setTesting(false));
   };
 
   // Any edit invalidates the previous verdict — a stale "connected" next to
   // changed fields would be worse than no answer at all.
-  useEffect(() => setTestResult(null), [provider, apiKey, model, baseUrl]);
+  useEffect(() => {
+    ++testRevision.current;
+    setTestResult(null);
+    return () => { ++testRevision.current; };
+  }, [provider, apiKey, model, baseUrl]);
 
   useEffect(() => {
     Promise.all([
@@ -1886,7 +1897,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           <button
             className="s-btn"
             type="button"
-            disabled={testing}
+            disabled={testing || !apiKey.trim()}
             onClick={runTest}
           >
             {testing

@@ -583,6 +583,7 @@
     "other": "{{detail}}",
     "unknown": "发生未知错误",
     "noAiKey": "尚未设置 AI API Key，请在「设置 → 高级」中填写",
+    "aiTestEmpty": "服务商未返回文本，请检查模型与端点",
     "aiTestTimeout": "服务商 20 秒内没有响应——请检查 Base URL 与网络",
     "emptyTagName": "标签名称不能为空",
     "emptyFeedTitle": "订阅源名称不能为空",

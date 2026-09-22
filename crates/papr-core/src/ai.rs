@@ -237,8 +237,8 @@ const TEST_PROMPT: &str = "ping";
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestOutcome {
-    /// The model that answered, after defaults/trimming — echoing it confirms
-    /// which model the provider actually served.
+    /// The requested model, after defaults/trimming. A gateway may route it to
+    /// another model; this is not a verified server-reported model identity.
     pub model: String,
     /// The endpoint that answered. Surfacing it makes a wrong Base URL obvious
     /// instead of leaving the user to guess which one was used.
@@ -251,8 +251,7 @@ pub struct TestOutcome {
 
 /// Verify that the configured provider really answers: one minimal completion
 /// through the same path [`stream_chat`] uses — auth header, endpoint, model
-/// name, and SSE parsing — so a green result means summaries and translation
-/// will work too, and a red one carries the provider's own words (rejected key,
+/// name, and SSE parsing — so a green result verifies a nonempty response on that path, and a red one carries the provider's own words (rejected key,
 /// unknown model, unreachable gateway).
 ///
 /// Costs a handful of tokens.
@@ -270,6 +269,9 @@ pub async fn test_connection(client: &Client, cfg: &AiConfig) -> AppResult<TestO
         // AI request timeout.
         Err(_) => return Err(AppError::code("aiTestTimeout")),
     };
+    if reply.trim().is_empty() {
+        return Err(AppError::code("aiTestEmpty"));
+    }
     Ok(TestOutcome {
         model: cfg.model.clone(),
         base_url: cfg.base_url.clone(),
@@ -684,6 +686,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.model, "gpt-4.1-mini");
+    }
+
+    async fn connection_fixture(body: &'static str, status: &'static str) -> super::AppResult<super::TestOutcome> {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = [0; 8192];
+            let count = socket.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.starts_with("POST /v1/chat/completions "));
+            assert!(request.to_ascii_lowercase().contains("authorization: bearer test-key"));
+            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let cfg = super::AiConfig::new(
+            Some("openai".into()), Some("test-key".into()),
+            Some("test-model".into()), Some(format!("http://{address}/v1")),
+        ).unwrap();
+        let result = super::test_connection(&reqwest::Client::new(), &cfg).await;
+        server.join().unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn connection_test_accepts_streamed_text() {
+        let result = connection_fixture(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n", "200 OK",
+        ).await.unwrap();
+        assert_eq!(result.reply, "OK");
+        assert_eq!(result.model, "test-model");
+    }
+
+    #[tokio::test]
+    async fn connection_test_rejects_empty_stream() {
+        assert!(connection_fixture("data: [DONE]\n\n", "200 OK").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_test_rejects_auth_failure() {
+        assert!(connection_fixture("{\"error\":{\"message\":\"invalid key\"}}", "401 Unauthorized").await.is_err());
     }
 
     /// Live check against a real provider — the only way to cover the request

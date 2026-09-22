@@ -583,6 +583,7 @@
     "other": "{{detail}}",
     "unknown": "An unknown error occurred",
     "noAiKey": "No AI API key set — add one in Settings → Advanced",
+    "aiTestEmpty": "The provider returned no text — check the model and endpoint",
     "aiTestTimeout": "The provider did not answer within 20 seconds — check the Base URL and the network",
     "emptyTagName": "Tag name can't be empty",
     "emptyFeedTitle": "Feed name can't be empty",

@@ -738,8 +738,8 @@ fn translate_target_lang(conn: &rusqlite::Connection) -> String {
 /// instead of leaving the user to guess.
 ///
 /// The arguments are what the settings form currently holds: the button has to
-/// work before the fields are saved. Anything blank falls back to the stored
-/// setting, and then to the provider default.
+/// work before the fields are saved. Omitted arguments use stored settings;
+/// explicit empty model/URL values use the provider defaults.
 #[tauri::command]
 pub async fn ai_test(
     state: State<'_, AppState>,
