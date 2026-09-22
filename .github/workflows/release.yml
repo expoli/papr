@@ -226,7 +226,8 @@ jobs:
           # warn instead of failing if upstream ever moves that line.
           hook="squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh"
           if grep -q '^export GDK_BACKEND=x11' "$hook"; then
-            # shellcheck disable=SC2016 -- expand in AppRun, not during packaging
+            # Expand in AppRun, not during packaging.
+            # shellcheck disable=SC2016
             sed -i 's|^export GDK_BACKEND=x11|export GDK_BACKEND="${GDK_BACKEND:-x11}"|' "$hook"
           else
             echo "::warning::GDK_BACKEND no longer hardcoded in $hook; skipping that tweak"
