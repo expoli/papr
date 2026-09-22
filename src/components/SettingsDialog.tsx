@@ -1666,12 +1666,6 @@ type TranslateEngine = "llm" | "google" | "deepl" | "bing";
 
 type AiProvider = "anthropic" | "openai" | "deepseek";
 
-/** Mirror of `AiConfig::new`'s mapping: anything that is not openai or deepseek
- *  is treated as anthropic, so the per-provider keys line up with what the
- *  backend would actually use. */
-const resolveProvider = (raw: string | null): AiProvider =>
-  raw === "openai" || raw === "deepseek" ? raw : "anthropic";
-
 /** Real AI provider configuration — backing the AI summary feature, plus the
  *  default translation engine + language and the engines' credentials. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
@@ -1689,35 +1683,32 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
 
-  // Per-provider memory. `ai_model` / `ai_base_url` always describe the active
-  // provider (they are what the backend reads); the `<key>_<provider>` copies
-  // keep each provider's own configuration, so switching providers stops
-  // discarding what was set up for the one being left.
-  const rememberProviderValue = (
-    p: AiProvider,
-    key: "ai_model" | "ai_base_url",
-    value: string,
-  ) => {
-    api.setSetting(`${key}_${p}`, value).catch(() => {});
+  const [profileBusy, setProfileBusy] = useState(true);
+  const switching = useRef(true);
+  // Blur saves must finish before a switch reads the stored profile.
+  const profileQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueueProfile = <T,>(operation: () => Promise<T>): Promise<T> => {
+    const next = profileQueue.current.then(operation);
+    profileQueue.current = next.catch(() => {});
+    return next;
   };
-
-  /** Point the form and the stored settings at `p`'s own model / Base URL. */
+  const saveProfile = (nextModel: string, nextBaseUrl: string) => {
+    enqueueProfile(() => api.configureAiProvider(provider, nextModel, nextBaseUrl))
+      .then(() => { savedModel.current = nextModel; savedBaseUrl.current = nextBaseUrl; })
+      .catch(reportError);
+  };
   const loadProviderProfile = async (p: AiProvider) => {
-    const [m, b] = await Promise.all([
-      api.getSetting(`ai_model_${p}`),
-      api.getSetting(`ai_base_url_${p}`),
-    ]);
-    const nextModel = m ?? "";
-    const nextBaseUrl = b ?? "";
-    setModel(nextModel);
-    savedModel.current = nextModel;
-    setBaseUrl(nextBaseUrl);
-    savedBaseUrl.current = nextBaseUrl;
-    await Promise.all([
-      api.setSetting("ai_model", nextModel),
-      api.setSetting("ai_base_url", nextBaseUrl),
-      api.setSetting("ai_provider", p),
-    ]);
+    if (switching.current) return;
+    switching.current = true;
+    setProfileBusy(true);
+    try {
+      const [m, b] = await enqueueProfile(() => api.configureAiProvider(p));
+      setProvider(p);
+      setModel(m); savedModel.current = m;
+      setBaseUrl(b); savedBaseUrl.current = b;
+      onToast(t("settings.advanced.aiSaved", { label: t("settings.advanced.aiProviderLabel") }));
+    } catch (e) { reportError(e); }
+    finally { switching.current = false; setProfileBusy(false); }
   };
 
   useEffect(() => {
@@ -1744,15 +1735,12 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setBaseUrl(b);
           savedBaseUrl.current = b;
         }
-        // Seed this provider's own copy on first open, so a configuration that
-        // predates the per-provider keys survives the first switch away.
-        if (m) rememberProviderValue(resolveProvider(p), "ai_model", m);
-        if (b) rememberProviderValue(resolveProvider(p), "ai_base_url", b);
         if (eng === "google" || eng === "deepl" || eng === "bing" || eng === "llm")
           setEngine(eng);
         if (tl) setTranslateLang(tl);
       })
-      .catch(() => {});
+      .catch(reportError)
+      .finally(() => { switching.current = false; setProfileBusy(false); });
   }, []);
 
   const save = (key: string, value: string, label: string) => {
@@ -1779,6 +1767,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   return (
     <div className="settings-group">
       <h3 className="settings-group-title">{t("settings.advanced.aiSummary")}</h3>
+      <fieldset disabled={profileBusy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <Row
         label={t("settings.advanced.aiProvider")}
         desc={t("settings.advanced.aiProviderDesc")}
@@ -1790,22 +1779,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             { value: "openai", label: "OpenAI" },
             { value: "deepseek", label: "DeepSeek" },
           ]}
-          onChange={(v) => {
-            setProvider(v);
-            // Model name and Base URL are provider-specific, so the form has
-            // to follow the new provider. The provider being left keeps its
-            // values under its own keys, so switching back restores them
-            // instead of leaving the fields empty.
-            loadProviderProfile(v)
-              .then(() =>
-                onToast(
-                  t("settings.advanced.aiSaved", {
-                    label: t("settings.advanced.aiProviderLabel"),
-                  }),
-                ),
-              )
-              .catch((e) => reportError(e));
-          }}
+          onChange={(v) => { void loadProviderProfile(v); }}
         />
       </Row>
       <Row
@@ -1848,11 +1822,9 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             const trimmed = model.trim();
             if (trimmed !== model) setModel(trimmed);
             if (trimmed !== savedModel.current) {
-              savedModel.current = trimmed;
-              save("ai_model", trimmed, t("settings.advanced.aiModelLabel"));
+              saveProfile(trimmed, baseUrl.trim());
             }
-            // Keep this provider's own copy in step with the active setting.
-            rememberProviderValue(provider, "ai_model", trimmed);
+
           }}
         />
       </Row>
@@ -1871,13 +1843,13 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             const trimmed = baseUrl.trim();
             if (trimmed !== baseUrl) setBaseUrl(trimmed);
             if (trimmed !== savedBaseUrl.current) {
-              savedBaseUrl.current = trimmed;
-              save("ai_base_url", trimmed, t("settings.advanced.aiBaseUrlLabel"));
+              saveProfile(model.trim(), trimmed);
             }
-            rememberProviderValue(provider, "ai_base_url", trimmed);
+
           }}
         />
       </Row>
+      </fieldset>
       <Row
         label={t("settings.advanced.translateEngine")}
         desc={t("settings.advanced.translateEngineDesc")}
